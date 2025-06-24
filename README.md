@@ -11,8 +11,8 @@ Please run Rmd scripts in this order:
 
 Data files:
 
-Ducarmon_2024_Berlin_ps.RDS -mOTU counts and clinical metadata
-Grundler_2024_Berlin_ps.RDS -mOTU counts and clinical metadata
-Mesnage_2023_collated.cazy.combined_rpkm.txt -CaZymes counts for Ducarmon dataset
-20230912_sample_metadata_anonymised.xlsx -metadata for CaZymes counts for Ducarmon dataset
-cazy_classification_fixed_updated_2025.csv -CaZymes subfamilies grouped by FUNCTION_AT_DESTINATION_1 in the file 20250219_Table_S1_incl_dbCAN3_annotations.xlsx
+1. Ducarmon_2024_Berlin_ps.RDS -mOTU counts and clinical metadata
+2. Grundler_2024_Berlin_ps.RDS -mOTU counts and clinical metadata
+3. Mesnage_2023_collated.cazy.combined_rpkm.txt -CaZymes counts for Ducarmon dataset
+4. 20230912_sample_metadata_anonymised.xlsx -metadata for CaZymes counts for Ducarmon dataset
+5. cazy_classification_fixed_updated_2025.csv -CaZymes subfamilies grouped by FUNCTION_AT_DESTINATION_1 in the file 20250219_Table_S1_incl_dbCAN3_annotations.xlsx
