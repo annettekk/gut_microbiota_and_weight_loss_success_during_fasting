@@ -1,0 +1,355 @@
+---
+title: "Finding_2_stepwise_regression"
+output: html_document
+date: "2025-06-22"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+```{r}
+cran_packages <- c( , "dplyr", "ggplot2", "nortest", "stringr", "tibble", "tidyr", "vegan")
+
+for (pkg in cran_packages) {
+  if (!requireNamespace(pkg, quietly = TRUE)) {
+    message(paste("Package '", pkg, "' not found. Installing...", sep = ""))
+    install.packages(pkg)
+  } else {
+    message(paste("Package '", pkg, "' is already installed.", sep = ""))
+  }}
+
+if (!requireNamespace("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+BiocManager::install("phyloseq")
+
+```
+
+```{r}
+#First, let's analyse Ducarmon dataset
+
+library(phyloseq)
+
+ducarmon_data <- readRDS("Ducarmon_2024_Berlin_ps.rds")
+meta <- as(sample_data(ducarmon_data), "data.frame")
+
+```
+
+```{r}
+library(dplyr)
+library(stringr)
+library(tidyr)
+
+# Extract and prepare OTU count data for 'Before' fasting
+data_before <- subset_samples(ducarmon_data, Timepoint == "Before")
+meta_before <- as(sample_data(data_before), "data.frame")
+
+rownames(meta_before) <- meta_before$Study_Patient
+sample_names(data_before) <- rownames(meta_before)
+
+abs_counts_before <- otu_table(data_before)
+if (taxa_are_rows(data_before)) {
+  abs_counts_before <- t(abs_counts_before)
+}
+
+abs_counts_before <- as.data.frame(abs_counts_before)
+
+#This we will need later for Bray dissimilarity calculation
+rel_abund_unfiltered <- (abs_counts_before / rowSums(abs_counts_before))
+colnames(rel_abund_unfiltered) <- str_sub(colnames(rel_abund_unfiltered), -14)
+#Remove participants without clinical metadata needed to calculate BMI before and after fasting
+rel_abund_unfiltered <- rel_abund_unfiltered %>%
+  filter(!(rownames(.) %in% c("OF_13", "OF_22", "OF_28")))
+```
+
+```{r}
+#Keep only OTU with prevalence >= 20%:
+
+# Count the number of patients (rows) with non-zero counts for each OTU (column)
+otu_presence_counts <- colSums(abs_counts_before > 0)
+
+# Identify the OTUs (columns) that are present in 9 or more patients
+otus_to_keep <- names(otu_presence_counts[otu_presence_counts >= 18])
+
+# Subset the dataframe to keep only the columns corresponding to those OTUs
+abs_counts_filtered <- abs_counts_before[, otus_to_keep]
+```
+
+```{r}
+#Normalise counts i.e. convert to relative abundances
+rel_abund <- (abs_counts_filtered / rowSums(abs_counts_filtered))
+
+#Transform to make distribution look more Gaussian
+arcsin_sqrt <- asin(sqrt(rel_abund))
+```
+
+```{r}
+#This is an optional step to check normality of counts distribution for each OTU
+
+library(nortest)
+
+# Apply Anderson–Darling test to each OTU (column)
+ad_pvals <- apply(arcsin_sqrt, 2, function(x) {
+  if (length(na.omit(x)) >= 3) {
+    ad.test(x)$p.value
+  } else {
+    NA
+  }
+})
+
+# Count how many OTUs passed normality test (p > 0.05)
+num_normal <- sum(ad_pvals > 0.05, na.rm = TRUE)
+num_tested <- sum(!is.na(ad_pvals))
+fraction_normal <- num_normal / num_tested
+```
+
+```{r}
+#Create metadata columns of regression_data dataframe that contain BMI_Change_Percent and BMR 
+# NB: BMI_Change is converted to absolute (positive) value.
+meta_weights <- meta %>%
+  filter(Timepoint %in% c("Before", "After")) %>%  
+  select(Study_Patient, Timepoint, Body_Weight) %>%
+  pivot_wider(
+    id_cols = Study_Patient,
+    names_from = Timepoint,
+    values_from = Body_Weight,
+    names_prefix = "Body_Weight_"
+  )
+
+meta_summarised <- meta %>%
+  group_by(Study_Patient) %>%
+  summarise(
+    across(c(Height, Age, Fasting_Days, Sex), unique)
+  )
+
+meta_wide <- left_join(meta_weights, meta_summarised, by = "Study_Patient")
+
+meta_wide <- meta_wide %>%
+  mutate(
+    Height_m = Height / 100,
+    BMI_Before = Body_Weight_Before / (Height_m^2),
+    BMI_After = Body_Weight_After / (Height_m^2),
+    BMI_Change = -(BMI_After - BMI_Before),
+    BMI_Change_Percent = (BMI_Change / BMI_Before) * 100
+  )
+
+meta_wide <- meta_wide %>%
+  mutate(
+    BMR = ifelse(
+      Sex == "M",
+      10 * Body_Weight_Before + 6.25 * Height - 5 * Age + 5,     # For males
+      10 * Body_Weight_Before + 6.25 * Height - 5 * Age - 161    # For females
+    )
+  )
+
+
+```
+
+```{r}
+#This optional chunk shows that absolute BMI_Change correlated with initial BMI. To avoid this #confounding factor, BMI_Change_Percent was chosen as as Y in linear model
+
+library(ggplot2)
+
+ggplot(meta_wide, aes(x = BMI_Change, y = BMI_Before)) +
+  geom_point(color = "steelblue", size = 2, alpha = 0.7) +
+  geom_smooth(method = "lm", se = TRUE, color = "darkred", linetype = "dashed") +
+  labs(
+    title = "Relationship Between BMI Change and Baseline BMI",
+    x = "BMI Change (After - Before)",
+    y = "BMI Before"
+  ) +
+  theme_minimal()
+
+
+#This plot shows the absence of relationship between BMI Change Percent and Baseline BMI
+
+ggplot(meta_wide, aes(x = BMI_Change_Percent, y = BMI_Before)) +
+  geom_point(color = "steelblue", size = 2, alpha = 0.7) +
+  #geom_smooth(method = "lm", se = TRUE, color = "darkred", linetype = "dashed") +
+  labs(
+    title = "Relationship Between BMI Change Percent and Baseline BMI",
+    x = "BMI Change Percent to Baseline BMI",
+    y = "BMI Before"
+  ) +
+  theme_minimal()
+```
+
+```{r}
+#Here we see the expected correlation between BMI_Change_Percent and number of Fasting_Days
+
+ggplot(meta_wide, aes(x = Fasting_Days, y = BMI_Change_Percent)) +
+  geom_point(color = "forestgreen", size = 2, alpha = 0.7) +
+  geom_smooth(method = "lm", se = TRUE, color = "black", linetype = "dashed") +
+  labs(
+    title = "BMI Change (%) vs. Fasting Duration",
+    x = "Fasting Days",
+    y = "BMI Change (%)"
+  ) +
+  theme_minimal()
+```
+
+```{r}
+#Is there also a relationship between BMI Change (%) and Basal Metabolic Rate? Probably not.
+
+ggplot(meta_wide, aes(x = BMR, y = BMI_Change_Percent)) +
+  geom_point(color = "dodgerblue", size = 2, alpha = 0.7) +
+  #geom_smooth(method = "lm", se = TRUE, color = "darkblue", linetype = "dashed") +
+  labs(
+    title = "BMI Change (%) vs. Basal Metabolic Rate (BMR)",
+    x = "BMR (kcal/day)",
+    y = "BMI Change (%)"
+  ) +
+  theme_minimal()
+```
+```{r}
+# Calculate Shannon diversity for each Study_Patient to test it in the linear model as one of regressors
+
+library(vegan) 
+
+shannon_diversity <- diversity(abs_counts_before, index = "shannon")
+shannon_df <- data.frame(Shannon_Diversity = shannon_diversity)
+
+# Does histogram look not too far from normal distribution?
+ggplot(shannon_df, aes(x = Shannon_Diversity)) +
+  geom_histogram(bins = 15, fill = "darkgreen", color = "black", alpha = 0.7) +
+  labs(
+    title = "Distribution of Shannon Diversity Index",
+    x = "Shannon Diversity Index",
+    y = "Frequency"
+  ) +
+  theme_bw()
+
+# Create a data frame of Shannon diversity
+shannon_df <- data.frame(Shannon_Diversity = shannon_diversity)
+
+# Add Study_Patient as a column
+shannon_df$Study_Patient <- rownames(shannon_df)
+
+# Merge Shannon diversity into meta_wide by Study_Patient
+meta_wide <- merge(meta_wide, shannon_df, by = "Study_Patient", all.x = TRUE)
+```
+```{r}
+# Do histograms of BMR and Number of Fasting Days look not too far from normal distribution?
+
+hist(regression_data$BMR,
+     breaks = 10,
+     col = "skyblue",
+     main = "Histogram of BMR across patient",
+     )
+
+hist(regression_data$Fasting_Days,
+     breaks = 6,
+     col = "skyblue",
+     main = "Histogram of num_fasting_days across patient",
+     )
+```
+
+
+
+```{r}
+#Add columns with transformed counts to regression_data dataframe
+
+library(tibble)
+
+colnames(arcsin_sqrt) <- str_sub(colnames(arcsin_sqrt), -14)
+clean_names <- colnames(arcsin_sqrt)
+
+regression_data <- meta_wide %>%
+  inner_join(
+    arcsin_sqrt %>% rownames_to_column("Study_Patient"),
+    by = "Study_Patient"
+  )
+```
+
+```{r}
+##Perform Stepwise Regression
+
+# Create the full model formula (clean_names are colnames(arcsin_sqrt))
+all_predictors <- c("Fasting_Days", "BMR", "Shannon_Diversity", clean_names)
+full_formula <- as.formula(paste("BMI_Change_Percent ~ ", paste(all_predictors, collapse = " + ")))
+
+# Perform stepwise regression using AIC (Akaike Information Criterion)
+stepwise_model <- step(lm(BMI_Change_Percent ~ 1, data = regression_data),
+                      scope = list(lower = ~1, upper = full_formula),
+                      direction = "both")
+
+# Get model summary
+model_summary <- summary(stepwise_model)
+
+# Extract coefficients table and drop intercept
+coef_df <- as.data.frame(model_summary$coefficients)
+coef_df$feature <- rownames(coef_df)
+coef_df <- coef_df[coef_df$feature != "(Intercept)", ]
+
+# Sort by p-value
+top10 <- coef_df %>%
+  arrange(`Pr(>|t|)`) %>%
+  slice(1:10)
+
+top10_features <- top10$feature
+
+# Build formula
+top10_formula <- as.formula(paste("BMI_Change_Percent ~", paste(top10_features, collapse = " + ")))
+
+# Fit model
+top10_model <- lm(top10_formula, data = regression_data)
+
+# Summary
+summary_top10 <- summary(top10_model)
+summary_top10
+
+```
+
+```{r}
+#Optional:
+#Compute relative importance. R^2 per feature
+
+library(relaimpo)
+
+rel_imp <- calc.relimp(top10_model, type = "lmg", rela = FALSE)
+
+# Optional: nicer display
+sort(rel_imp$lmg, decreasing = TRUE) * 100
+```
+
+```{r}
+#Optional:
+#Plot residuals to check whether this 1st order linear model is a good fit
+
+hist(residuals(top10_model),
+     breaks = 20,
+     col = "skyblue",
+     main = "Histogram of Residuals",
+     xlab = "Residuals")
+
+qqnorm(residuals(top10_model), main = "Q–Q Plot of Residuals")
+qqline(residuals(top10_model), col = "red")
+
+plot(fitted(top10_model), residuals(top10_model),
+     xlab = "Fitted Values",
+     ylab = "Residuals",
+     main = "Residuals vs Fitted Values",
+     pch = 19, col = "steelblue")
+abline(h = 0, col = "red", lty = 2)
+
+
+
+# Get the data used to fit the model
+model_data <- model.frame(top10_model)
+
+# Plot residuals vs mOTU_v31_02019 (the most influential OTU)
+plot(model_data$mOTU_v31_02019, residuals(top10_model),
+     xlab = "mOTU_v31_02019",
+     ylab = "Residuals",
+     main = "Residuals vs mOTU_v31_02019",
+     pch = 19, col = "darkorange")
+abline(h = 0, col = "red", lty = 2)
+
+```
+
+```{r}
+sessionInfo()
+```
+

@@ -1,0 +1,175 @@
+---
+title: "Finding_2_Spearman_R_Ducarmon_Grundler"
+output: html_document
+date: "2025-06-22"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+```{r}
+# Ducarmon dataset: adjust for the different fasting periods of participants: assumed linear (power 1) correlation between number of days and % BMI change
+
+regression_data <- regression_data[!is.na(regression_data$Fasting_Days) & 
+                                   !is.na(regression_data$BMI_Change_Percent), ]
+
+# Fit linear model: BMI_change_percent ~ fasting_days
+model_fast_days <- lm(BMI_Change_Percent ~ Fasting_Days, data = regression_data)
+
+# Get residuals (BMI percent change adjusted for fasting_days)
+regression_data$BMI_Change_Percent_adj <- resid(model_fast_days)
+```
+
+
+```{r}
+## For Ducarmon dataset, calculate Spearman correlation of each OTU with BMI_Change_Percent_adj
+
+# 1. In regression_data df, identify columns that start with "mOTU"
+otu_columns <- grep("^mOTU", colnames(regression_data), value = TRUE)
+
+# 2. Initialize a result dataframe
+spearman_results <- data.frame(
+  OTU = otu_columns,
+  Spearman_R = NA,
+  P_value = NA
+)
+
+# 3. Loop through OTUs and calculate Spearman correlation
+for (i in seq_along(otu_columns)) {
+  otu <- otu_columns[i]
+  test <- cor.test(regression_data[[otu]], regression_data$BMI_Change_Percent_adj,
+                   method = "spearman", exact = FALSE)
+  spearman_results$Spearman_R[i] <- test$estimate
+  spearman_results$P_value[i] <- test$p.value
+}
+
+# 4. (Optional) Sort by strongest correlation - Can compare to the results of stepwise regression
+spearman_results <- spearman_results[order(abs(spearman_results$Spearman_R), decreasing = TRUE), ]
+```
+
+
+```{r}
+## For Grundler dataset, calculate Spearman correlation of each OTU with BMI_Change_Percent
+
+# Get the OTU names from arcsin_sqrt - Ducarmon counts df filtered @ 20% prevalence
+otu_names_to_keep <- colnames(arcsin_sqrt)
+
+# Subset otu_T0 to keep only those columns
+otu_T0_filtered <- otu_T0[, otu_names_to_keep, drop = FALSE] #this line doesn't throw an error, hence all 509 OTU from Ducarmon_filtered@20%prevalence are present in otu_T0 of Grundler
+
+#remove the column named "unassigned"
+otu_T0_filtered <- otu_T0_filtered %>% dplyr::select(-unassigned)
+
+rel_abund_T0_s <- (otu_T0_filtered / rowSums(otu_T0_filtered))
+
+arcsin_sqrt_T0_s <- asin(sqrt(rel_abund_T0_s))
+
+# Align row order of arcsin_sqrt_T0_s with regression_data_g
+arcsin_aligned_T0_s <- arcsin_sqrt_T0_s[rownames(regression_data_g), , drop = FALSE]
+
+# Calculate Spearman correlation for each OTU
+otu_names_g <- colnames(arcsin_aligned_T0_s)
+spearman_results_g <- data.frame(
+  OTU = otu_names_g,
+  Spearman_R = NA,
+  P_value = NA
+)
+
+for (i in seq_along(otu_names_g)) {
+  otu <- otu_names_g[i]
+  test <- cor.test(arcsin_aligned_T0_s[[otu]], regression_data_g$BMI_Change_Percent,
+                   method = "spearman", exact = FALSE)
+  spearman_results_g$Spearman_R[i] <- test$estimate
+  spearman_results_g$P_value[i] <- test$p.value
+}
+```
+
+```{r}
+##Sprearman correlation of correlations of Ducarmon and Grundler datasets
+
+# Inner join to align both data frames by OTU name
+merged_spearman <- merge(spearman_results, spearman_results_g, 
+                         by = "OTU", suffixes = c("_d", "_g"))
+
+# Calculate Spearman correlation between the two Spearman_R columns
+correlation_result <- cor.test(
+  merged_spearman$Spearman_R_d,
+  merged_spearman$Spearman_R_g,
+  method = "spearman",
+  exact = FALSE
+)
+
+correlation_result #0.095
+```
+
+
+```{r}
+##Re-try with 438 OTUs i.e.20% prevalence threshold for both datasets
+
+# Grundler: count number of non-zero entries per OTU (column)
+otu_nonzero_counts <- colSums(otu_T0_filtered > 0)
+
+otu_T0_filtered_438 <- otu_T0_filtered[, otu_nonzero_counts >= 7]
+arcsin_sqrt_T0_s_438 <- arcsin_sqrt_T0_s[, otu_nonzero_counts >= 7]
+
+# Align row order of arcsin_sqrt_T0_s with regression_data_g
+arcsin_aligned_T0_s_438 <- arcsin_sqrt_T0_s_438[rownames(regression_data_g), , drop = FALSE]
+
+# Calculate Spearman correlation for each OTU
+otu_names_g <- colnames(arcsin_aligned_T0_s_438)
+spearman_results_g <- data.frame(
+  OTU = otu_names_g,
+  Spearman_R = NA,
+  P_value = NA
+)
+
+for (i in seq_along(otu_names_g)) {
+  otu <- otu_names_g[i]
+  test <- cor.test(arcsin_aligned_T0_s[[otu]], regression_data_g$BMI_Change_Percent,
+                   method = "spearman", exact = FALSE)
+  spearman_results_g$Spearman_R[i] <- test$estimate
+  spearman_results_g$P_value[i] <- test$p.value
+}
+```
+
+```{r}
+# Filter Ducarmon OTUs
+
+# 1. Identify OTU columns 
+otu_columns <- colnames(otu_T0_filtered_438)
+
+# 2. Initialize a result dataframe
+spearman_results <- data.frame(
+  OTU = otu_columns,
+  Spearman_R = NA,
+  P_value = NA
+)
+
+# 3. Loop through OTUs and calculate Spearman correlation with BMI_Change_Percent_adj
+for (i in seq_along(otu_columns)) {
+  otu <- otu_columns[i]
+  test <- cor.test(regression_data[[otu]], regression_data$BMI_Change_Percent_adj,
+                   method = "spearman", exact = FALSE)
+  spearman_results$Spearman_R[i] <- test$estimate
+  spearman_results$P_value[i] <- test$p.value
+}
+```
+
+```{r}
+##Sprearman correlation of correlations of Ducarmon and Grundler datasets
+
+# Inner join to align both data frames by OTU name
+merged_spearman <- merge(spearman_results, spearman_results_g, 
+                         by = "OTU", suffixes = c("_d", "_g"))
+
+# Calculate Spearman correlation between the two Spearman_R columns
+correlation_result <- cor.test(
+  merged_spearman$Spearman_R_d,
+  merged_spearman$Spearman_R_g,
+  method = "spearman",
+  exact = FALSE
+)
+
+correlation_result #0.1
+```
+

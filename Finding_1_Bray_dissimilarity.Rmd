@@ -1,0 +1,258 @@
+---
+title: "Finding_1_Bray_dissimilarity"
+output: html_document
+date: "2025-06-22"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+## Prepare Ducarmon data for Bray-Curtis dissimilarity index calculation 
+# Extract and prepare OTU count data for 'After' fasting
+
+data_after <- subset_samples(ducarmon_data, Timepoint == "After")
+meta_after <- as(sample_data(data_after), "data.frame")
+
+rownames(meta_after) <- meta_after$Study_Patient
+sample_names(data_after) <- rownames(meta_after)
+
+abs_counts_after <- otu_table(data_after)
+if (taxa_are_rows(data_after)) {
+  abs_counts_after <- t(abs_counts_after)
+}
+
+abs_counts_after <- as.data.frame(abs_counts_after)
+
+# Turn absolute counts to relative abundances to compensate for different sequencing depth of samples
+
+rel_counts_after <- (abs_counts_after / rowSums(abs_counts_after))
+
+colnames(rel_counts_after) <- str_sub(colnames(rel_counts_after), -14)
+
+#Remove participants without clinical metadata needed to calculate BMI before and after fasting
+rel_counts_after <- rel_counts_after %>%
+  filter(!(rownames(.) %in% c("OF_13", "OF_22", "OF_28")))
+```
+
+
+```{r}
+## Bray-Curtis dissimilarity indices
+
+# Make sure Participant_IDs of Before and After counts dataframes are in the same order
+rel_abund_unfiltered <- rel_abund_unfiltered[order(rownames(rel_abund_unfiltered)), ]
+rel_counts_after <- rel_counts_after[order(rownames(rel_counts_after)), ]
+
+# Rename 'after' rows to avoid overlap of rownames between two dataframes
+rownames(rel_counts_after) <- paste0(rownames(rel_counts_after), "_after")
+
+# Combine before and after data into one matrix (order matters)
+combined <- rbind(rel_abund_unfiltered, rel_counts_after)
+
+# Compute Bray–Curtis dissimilarity for all pairs
+bray <- vegdist(combined, method = "bray")
+
+# Convert to matrix for indexing
+bray_mat <- as.matrix(bray)
+
+# Extract diagonal distances between paired before/after samples (assuming same rownames and order in #both)
+patient_ids_before <- rownames(rel_abund_unfiltered)
+patient_ids_after <- rownames(rel_counts_after)
+
+bray_dissimilarity <- sapply(seq_along(patient_ids_before), function(i) {
+  before <- patient_ids_before[i]
+  after <- patient_ids_after[i]  
+  bray_mat[before, after]
+})
+
+# Named vector of dissimilarities
+names(bray_dissimilarity) <- patient_ids_before
+```
+
+```{r}
+# Does histogram look not too far from normal distribution? If not, do these data need transformation #before trying linear regression?
+
+hist(bray_dissimilarity,
+     breaks = 10,
+     col = "skyblue",
+     main = "Histogram of Bray_Dissimilarity across participants, Ducarmon",
+     )
+```
+
+```{r}
+# Convert vector of dissimilarities to data frame for joining with regression_data
+bray_df <- data.frame(
+  Study_Patient = names(bray_dissimilarity),
+  Bray_Dissimilarity = as.numeric(bray_dissimilarity),
+  row.names = names(bray_dissimilarity)
+)
+
+# Reorder to match regression_data rownames
+bray_df <- bray_df[regression_data$Study_Patient, ,drop = FALSE]
+
+# Find position of Shannon_Diversity column
+insert_pos <- which(colnames(regression_data) == "Shannon_Diversity")
+
+# Add Bray_Dissimilarity after that column
+regression_data <- add_column(
+  regression_data,
+  Bray_Dissimilarity = bray_df$Bray_Dissimilarity,
+  .after = insert_pos
+)
+```
+
+```{r}
+# Perform the linear regression
+model_Bray <- lm(BMI_Change_Percent ~ Fasting_Days + Bray_Dissimilarity + BMR , data = regression_data)
+summary(model_Bray)
+
+
+# Plot residuals to check whether this 1st order linear model is a good fit
+plot(fitted(model_Bray), residuals(model_Bray),
+     xlab = "Fitted Values",
+     ylab = "Residuals",
+     main = "Residuals vs Fitted Values",
+     pch = 19, col = "steelblue")
+abline(h = 0, col = "red", lty = 2)
+
+# Compute relative importance. R^2 per feature
+rel_imp <- calc.relimp(model_Bray, type = "lmg", rela = FALSE)
+
+# Optional: nicer display
+sort(rel_imp$lmg, decreasing = TRUE) * 100
+```
+
+```{r}
+#Create bar plot of each regressor contributions to R^2
+library(scales)
+
+# Data: contributions + p-values
+importance_df <- data.frame(
+  Regressor = c("Fasting_Days", "Bray_Dissimilarity", "BMR"),
+  Contribution = c(0.1656977, 0.1543401, 0.0450479),
+  P_value = c(0.0005, 0.0002, 0.019)
+)
+
+# Format labels with contribution % and p-value
+importance_df$Label <- paste0(
+  percent(importance_df$Contribution, accuracy = 0.1),
+  "\n(p = ", formatC(importance_df$P_value, format = "e", digits = 1), ")"
+)
+
+# Plot
+Bray_contribution_fig <- ggplot(importance_df, aes(x = reorder(Regressor, -Contribution), y = Contribution, fill = Regressor)) +
+  geom_bar(stat = "identity", width = 0.6) +
+  scale_y_continuous(labels = percent_format(accuracy = 1), limits = c(0, 0.2)) +
+  labs(
+    title = "Contributions to response prediction",
+    subtitle = "Response: BMI_Change_Percent | R² = 36.51% , adj R² = 34% | 86 participants Ducarmon",
+    x = "Regressor",
+    y = "Variance Explained (%)"
+  ) +
+  geom_text(aes(label = Label), vjust = -0.5, size = 4.2) +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+Bray_contribution_fig
+```
+
+```{r}
+##Now repeat everything for Grundler dataset: calculate Bray dissimilarities and try the index as predictor of % BMI Change using a linear model
+
+# Subset metadata to Timepoint T2
+meta_T2 <- meta_box %>% filter(Timepoint == "T2")
+
+# Subset phyloseq object to only samples at Timepoint T2
+ps_T2 <- prune_samples(rownames(meta_T2), box_group_data)
+
+# Extract OTU table (as a data frame)
+otu_T2 <- as.data.frame(otu_table(ps_T2))
+
+# Transpose if taxa are rows
+if (taxa_are_rows(ps_T2)) {
+  otu_T2 <- t(otu_T2)
+  otu_T2 <- as.data.frame(otu_T2)
+}
+
+# Add Participant_ID from metadata and set it as rownames
+otu_T2$Participant_ID <- meta_T2$Participant_ID
+rownames(otu_T2) <- otu_T2$Participant_ID
+rownames(otu_T2) <- paste0(rownames(otu_T2), "_after")
+otu_T2$Participant_ID <- NULL
+
+colnames(otu_T2) <- str_sub(colnames(otu_T2), -14)
+
+rel_abund_T2 <- (otu_T2 / rowSums(otu_T2))
+rel_abund_T0 <- (otu_T0 / rowSums(otu_T0))
+```
+
+```{r}
+#Bray-Curtis dissimilarities
+#make sure patients(rows) are in the same order in both dataframes
+rel_abund_T0 <- rel_abund_T0[order(rownames(rel_abund_T0)), ]
+rel_abund_T2 <- rel_abund_T2[order(rownames(rel_abund_T2)), ]
+
+# Combine before and after data into one matrix (order matters)
+combined_g <- rbind(rel_abund_T0, rel_abund_T2)
+
+# Compute Bray–Curtis dissimilarity for all pairs
+bray_g <- vegdist(combined_g, method = "bray")
+
+# Convert to matrix for indexing
+bray_mat_g <- as.matrix(bray_g)
+
+# Extract diagonal distances between paired before/after samples
+# (assuming same rownames and order in both)
+patient_ids_before_g <- rownames(rel_abund_T0)
+patient_ids_after_g <- rownames(rel_abund_T2)
+
+bray_dissimilarity_g <- sapply(seq_along(patient_ids_before_g), function(i) {
+  before <- patient_ids_before_g[i]
+  after <- patient_ids_after_g[i]  
+  bray_mat_g[before, after]
+})
+
+# Named vector of dissimilarities
+names(bray_dissimilarity_g) <- patient_ids_before_g
+```
+
+
+```{r}
+hist(bray_dissimilarity_g,
+     breaks = 10,
+     col = "skyblue",
+     main = "Histogram of Bray_Dissimilarity across paticipants, Grundler",
+     )
+```
+
+```{r}
+# Convert to data frame for joining with regression_data
+bray_df_g <- data.frame(
+  Study_Patient = names(bray_dissimilarity_g),
+  Bray_Dissimilarity = as.numeric(bray_dissimilarity_g),
+  row.names = names(bray_dissimilarity_g)
+)
+
+# Reorder to match regression_data rownames
+bray_df_g <- bray_df_g[rownames(regression_data_g), , drop = FALSE]
+
+# Find position of BMI_Change_Percent
+insert_pos <- which(colnames(regression_data_g) == "BMI_Change_Percent")
+
+# Add Bray_Dissimilarity after that column
+regression_data_g <- add_column(
+  regression_data_g,
+  Bray_Dissimilarity = bray_df_g$Bray_Dissimilarity,
+  .after = insert_pos
+)
+```
+
+```{r}
+# Perform the linear regression
+model_Bray_g <- lm(BMI_Change_Percent ~ Bray_Dissimilarity, data = regression_data_g)
+summary_model_Bray_g <- summary(model_Bray_g)
+
+```
+
