@@ -1,7 +1,7 @@
 # gut_microbiota_and_weight_loss_success_during_fasting
 Final project for my MSc Bioinformatics @Birkbeck
 
-Order to run Rmd scripts:
+Please run Rmd scripts in this order:
 
 1. Finding_2_stepwise_regression
 2. Testing_stepwise_regression_model_on_Grundler_dataset
