@@ -19,3 +19,4 @@ Data files:
 6. 20250219_Table_S1_incl_dbCAN3_annotations.xlsx
 7. 3d ds 16S clin data.csv - this one is used by the python script; it is a csv version of CLINICAL_DATA tab from BW-microbiote-clinical-data-13052025-3d-ds.xlsx
 8. metadata.csv - this one is used by the python script; it is a csv version of METADATA tab from BW-microbiote-clinical-data-13052025-3d-ds.xlsx
+9. BW-microbiote-clinical-data-13052025-3d-ds.xlsx
