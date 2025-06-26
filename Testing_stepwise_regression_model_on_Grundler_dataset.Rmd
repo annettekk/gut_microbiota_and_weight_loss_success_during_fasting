@@ -1,0 +1,174 @@
+---
+title: "Testing_stepwise_regression_model_on_Grundler_dataset"
+output: html_document
+date: "2025-06-22"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+#Load Grundler phyloseq object
+
+library(phyloseq)
+
+grundler_data <- readRDS("Grundler_2024_Berlin_ps.rds")
+meta_g <- as(sample_data(grundler_data), "data.frame")
+#colnames(meta_g)
+```
+
+```{r}
+#Subset only samples from participants who underwent fasting 
+
+box_group_data <- subset_samples(grundler_data, Group == "BOX")
+```
+
+```{r}
+#Prepare metadata for regression dataframe: create metadataframe bmi_wide
+
+library(dplyr)
+library(tidyr)
+library(tibble)
+
+# Extract sample metadata as a data frame
+meta_box <- as(sample_data(box_group_data), "data.frame")
+
+# Reshape into wide format: 1 row per Participant, BMI at T0, T2, T3.
+# NB: we calculate BMI before fasting (T0), after five days of fasting and four days of food #reintroduction (T2) and at the follow-up time point (T3) 1 month after the intervention. T3 data is not #used in subsequent analysis. Clinical metadata for day 6 (T1) - immediately after fasting - was not #available in phyloseq object.
+bmi_wide <- meta_box %>%
+  dplyr::select(Participant_ID, Timepoint, BMI) %>%
+  pivot_wider(
+    id_cols = Participant_ID,
+    names_from = Timepoint,
+    values_from = BMI,
+    names_prefix = "BMI_"
+  ) %>%
+  column_to_rownames("Participant_ID")  # Make Participant_ID row names
+
+# Subset metadata to Timepoint T0 i.e. before fasting
+meta_T0 <- meta_box %>% filter(Timepoint == "T0")
+```
+
+```{r}
+#Prepare taxonomic counts for adding to regression dataframe
+
+# Subset phyloseq object to only samples at Timepoint T0
+ps_T0 <- prune_samples(rownames(meta_T0), box_group_data)
+
+# Extract OTU table (as a data frame)
+otu_T0 <- as.data.frame(otu_table(ps_T0))
+
+# Transpose if taxa are rows
+if (taxa_are_rows(ps_T0)) {
+  otu_T0 <- t(otu_T0)
+  otu_T0 <- as.data.frame(otu_T0)
+}
+
+# Add Participant_ID from metadata and set it as rownames
+otu_T0$Participant_ID <- meta_T0$Participant_ID
+rownames(otu_T0) <- otu_T0$Participant_ID
+otu_T0$Participant_ID <- NULL
+
+library(stringr)
+
+colnames(otu_T0) <- str_sub(colnames(otu_T0), -14)
+
+#Select only 9 OTU that were found most important contributors to BMI Change Percent by stepwise #regression performed on Ducarmon data
+otu_T0_selected <- otu_T0 %>%
+  dplyr::select(mOTU_v31_02019, mOTU_v31_03928, mOTU_v31_17389,
+         mOTU_v31_01350, mOTU_v31_18027, mOTU_v31_13151,
+         mOTU_v31_12288, mOTU_v31_07673, mOTU_v31_12336)
+
+#Normalise and transform OTU counts
+rel_abund_g <- (otu_T0_selected / rowSums(otu_T0_selected))
+arcsin_sqrt_g <- asin(sqrt(rel_abund_g))
+
+```
+
+```{r}
+#This is an optional step to check normality of counts distribution for each OTU
+
+library(nortest)
+
+# Apply Anderson–Darling test to each OTU (column)
+ad_pvals <- apply(arcsin_sqrt_g, 2, function(x) {
+  if (length(na.omit(x)) >= 3) {
+    ad.test(x)$p.value
+  } else {
+    NA
+  }
+})
+
+# Count how many OTUs passed normality test (p > 0.05)
+num_normal <- sum(ad_pvals > 0.05, na.rm = TRUE)
+num_tested <- sum(!is.na(ad_pvals))
+fraction_normal <- num_normal / num_tested #0.33
+```
+
+```{r}
+#Merge metadataframe (bmi_wide) and counts dataframe (arcsin_sqrt_g) into regression_data_g dataframe
+
+# Ensure overlapping Participant_IDs
+common_ids_g <- intersect(rownames(bmi_wide), rownames(arcsin_sqrt_g)) #this is just a check step, optional
+
+bmi_wide <- bmi_wide[order(rownames(bmi_wide)), ]
+arcsin_sqrt_g <- arcsin_sqrt_g[order(rownames(arcsin_sqrt_g)), ]
+regression_data_g <- cbind(bmi_wide, arcsin_sqrt_g)
+```
+
+```{r}
+#Add BMI_change_percent column to regression dataframe
+
+regression_data_g <- regression_data_g %>%
+  mutate(
+    BMI_T0 = as.numeric(BMI_T0),
+    BMI_T2 = as.numeric(BMI_T2),
+    BMI_T3 = as.numeric(BMI_T3)
+  )
+
+# Calculate BMI change (%)
+BMI_change_percent <- -100 * (regression_data_g$BMI_T2 - regression_data_g$BMI_T0) / regression_data_g$BMI_T0
+
+# Insert after BMI_T3
+regression_data_g <- regression_data_g %>%
+  tibble::add_column(BMI_Change_Percent = BMI_change_percent, .after = "BMI_T3")
+```
+
+```{r}
+##Test the linear model on this independent dataset
+
+# Define predictor column names
+otu_vars <- c("mOTU_v31_02019", "mOTU_v31_03928", "mOTU_v31_17389",
+              "mOTU_v31_01350", "mOTU_v31_18027", "mOTU_v31_13151",
+              "mOTU_v31_12288", "mOTU_v31_07673", "mOTU_v31_12336")
+
+# Build the formula
+model_formula <- as.formula(
+  paste("BMI_Change_Percent ~", paste(otu_vars, collapse = " + "))
+)
+
+# Fit the linear model
+top10_model_g <- lm(model_formula, data = regression_data_g)
+
+# View summary
+summary(top10_model_g)
+```
+
+```{r}
+#Optional:
+#Plot residuals to check whether this 1st order linear model is a good fit
+
+library(ggplot2)
+
+plot(fitted(top10_model_g), residuals(top10_model_g),
+     xlab = "Fitted Values",
+     ylab = "Residuals",
+     main = "Residuals vs Fitted Values",
+     pch = 19, col = "steelblue")
+abline(h = 0, col = "red", lty = 2)
+
+
+```
+
